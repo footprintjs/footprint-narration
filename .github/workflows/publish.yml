@@ -1,0 +1,53 @@
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+
+# Least privilege: publish power (OIDC) only in the `publish` job, which takes the tarball packed and tested in
+# `build` and resolves no dependencies of its own. The first version goes up by hand (npm publish), then
+# npmjs.com → footprint-narration → Settings → Trusted publishing: GitHub Actions, footprintjs/footprint-narration, publish.yml.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm test
+      - run: npx --yes -p typescript@5.9.3 tsc -p tsconfig.check.json
+      - run: npx --yes publint@0.3.25 --strict
+      - run: npx --yes @arethetypeswrong/cli@0.18.5 --pack . --profile esm-only
+      - name: Pack the publishable tarball
+        run: |
+          npm pack
+          mv ./*.tgz package.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-tarball
+          path: package.tgz
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC trusted publishing — this job only
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-tarball
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      # trusted publishing needs npm >= 11.5.1
+      - run: npm install -g npm@11
+      - name: Publish to npm
+        run: npm publish ./package.tgz --provenance --access public

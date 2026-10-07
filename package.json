@@ -1,0 +1,61 @@
+{
+  "name": "footprint-narration",
+  "version": "0.1.0",
+  "description": "What a voice says and what a caption shows: shown-vs-spoken text, sentences and word times, caption cues and files, YouTube chapters; a voice port and a clip cache behind /voice.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Sanjay Krishna Anbalagan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/footprintjs/footprint-narration.git"
+  },
+  "homepage": "https://github.com/footprintjs/footprint-narration#readme",
+  "bugs": "https://github.com/footprintjs/footprint-narration/issues",
+  "keywords": [
+    "narration",
+    "voice",
+    "tts",
+    "captions",
+    "subtitles",
+    "srt",
+    "webvtt",
+    "youtube",
+    "chapters",
+    "numbers",
+    "forced-alignment",
+    "footprintjs"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./voice": {
+      "types": "./voice.d.ts",
+      "default": "./voice.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "voice.js",
+    "voice.d.ts",
+    "src",
+    "plugin",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test --experimental-test-coverage --test-coverage-include=src/** --test-coverage-include=index.js --test-coverage-include=voice.js --test-coverage-lines=95 --test-coverage-branches=85 --test-coverage-functions=90 test/*.test.js"
+  },
+  "devDependencies": {
+    "fast-check": "^4.10.2"
+  }
+}

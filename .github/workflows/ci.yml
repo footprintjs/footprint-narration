@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm test                                    # with the coverage thresholds
+      - run: npx --yes -p typescript@5.9.3 tsc -p tsconfig.check.json   # the hand-kept types describe both doors
+      - run: npx --yes publint@0.3.25 --strict
+      - run: npx --yes @arethetypeswrong/cli@0.18.5 --pack . --profile esm-only
