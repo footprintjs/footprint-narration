@@ -14,5 +14,5 @@ sentenceStarts('Two words. Then three more!', alignedWords);   // [0.1, 1.2] —
 The split is after `. ? !` and white space, written without a lookbehind (older Safari cannot parse one).
 StoryDeck's `listenRuntime` keeps an inline copy of this split, because a page runtime is serialised into the
 page and cannot import. It applies the split to each note and each `[draft]` part, so it agrees with
-`saidSentences` whenever every note and every part ends its own sentences — StoryDeck's tests pin both the
-agreement and the cases where a sentence runs across a note.
+`saidSentences` whenever every note and every part ends its own sentences and a `[draft]` mark has white space
+before it — StoryDeck's tests pin both the agreement and the cases where a sentence runs across a note.
