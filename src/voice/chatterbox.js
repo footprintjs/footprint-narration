@@ -18,7 +18,7 @@ export function chatterboxKit({ kit, python = '.venv-voice/bin/python', script =
     synthesize(scenes, { work }) {
       const dir = path.resolve(work), board = path.join(dir, 'storyboard.json');
       writeFileSync(board, JSON.stringify({ scenes: scenes.map((s) => ({ id: s.id, narration: s.text })) }, null, 1));
-      const done = run(path.join(kit, python), [script, '--storyboard', board, '--profile', profile, '--device', device, '--out', dir],
+      const done = run(path.resolve(kit, python), [script, '--storyboard', board, '--profile', profile, '--device', device, '--out', dir],
         { cwd: kit, stdio: 'inherit', env: { ...env, HF_HUB_OFFLINE: env.HF_HUB_OFFLINE ?? '1' } });
       const why = failure(done);
       if (why) throw new Error(`the voice kit failed (${why}) in ${kit}`);

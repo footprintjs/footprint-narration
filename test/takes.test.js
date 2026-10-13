@@ -12,6 +12,7 @@ import { recordedTakes, voiceClips, clipFor, clipKey, chatterboxKit } from '../v
 import { readWav } from '../src/voice/wav.js';
 import { TRIM, trimSettings, loudWindows, planTrim, cutFilter, decodeArgs, cutArgs, trimTakes } from '../src/voice/trim.js';
 import { ALIGNER } from '../src/voice/align.js';
+import { readTakeBook, findTakes, matchKey } from '../src/voice/takes.js';
 
 const RATE = 16000;
 const CLONED = { id: 'me', exaggeration: 0.5, cfgWeight: 0.5, seed: 7, sentenceGapSeconds: 0.3 };
@@ -36,15 +37,22 @@ const wavOf = (parts) => wavBytes(samplesOf(parts));
 // silence 0.5 · a word 1.0 · a pause 1.5 · a word 0.8 · silence 1.0 — 4.8 s
 const TAKE = [[0.5, 0], [1, 0.5], [1.5, 0], [0.8, 0.5], [1, 0]];
 
-/** ffmpeg, stood in for: a decode copies (these takes are 16-bit mono PCM already); a cut keeps its filter's atrim spans. */
+/**
+ * ffmpeg, stood in for: a decode copies (these takes are 16-bit mono PCM already); a cut keeps its filter's atrim
+ * spans and adds its adelay and apad samples of silence.
+ */
 function fakeFfmpeg(args) {
   const input = args[args.indexOf('-i') + 1], out = args.at(-1);
   if (!args.includes('-filter_complex')) { copyFileSync(input, out); return { status: 0 }; }
   const { rate, samples } = readWav(input), graph = args[args.indexOf('-filter_complex') + 1];
-  const kept = [...graph.matchAll(/start_sample=(\d+):end_sample=(\d+)/g)].flatMap((m) => [...samples.slice(Number(m[1]), Number(m[2]))]);
-  writeFileSync(out, wavBytes(kept, { rate }));
+  const keep = [...graph.matchAll(/start_sample=(\d+):end_sample=(\d+)/g)].map((m) => [Number(m[1]), Number(m[2])]);
+  const pad = [/adelay=delays=(\d+)S/, /apad=pad_len=(\d+)/].map((re) => Number(graph.match(re)?.[1] ?? 0));
+  writeFileSync(out, wavBytes(cutOf(samples, keep, pad), { rate }));
   return { status: 0 };
 }
+
+/** A cut, as samples: `pad[0]` zeros, the `keep` spans, `pad[1]` zeros. */
+const cutOf = (samples, keep, pad) => [...new Array(pad[0]).fill(0), ...keep.flatMap(([a, b]) => [...samples.slice(a, b)]), ...new Array(pad[1]).fill(0)];
 
 /**
  * The kit's Python running align_take.py, stood in for: every word timed evenly, mean score 0.9, letters 1; `low`
@@ -92,25 +100,55 @@ test('trim maths: the kit\'s lead and tail kept, a long pause capped in its midd
   const plan = planTrim(samplesOf(TAKE), RATE, TRIM);
   // first sound at 0.5 s → start 0.3 s; last sound ends at 3.8 s → end 4.2 s; the 1.5 s pause keeps 0.3 s each side
   assert.deepEqual(plan.keep, [[4800, 28800], [43200, 67200]]);
-  assert.deepEqual(plan.trim, { length: 4.8, kept: 3, cutBefore: 0.3, cutAfter: 0.6, pauses: [{ at: 1.5, was: 1.5, now: 0.6 }] });
-  assert.equal(cutFilter(plan.keep), '[0:a]atrim=start_sample=4800:end_sample=28800,asetpts=PTS-STARTPTS[p0];'
+  assert.deepEqual(plan.pad, [0, 0]);
+  assert.deepEqual(plan.trim, { length: 4.8, clip: 3, kept: 3, cutBefore: 0.3, cutAfter: 0.6, padBefore: 0, padAfter: 0, pauses: [{ at: 1.5, was: 1.5, now: 0.6 }] });
+  assert.equal(cutFilter(plan.keep, plan.pad), '[0:a]atrim=start_sample=4800:end_sample=28800,asetpts=PTS-STARTPTS[p0];'
     + '[0:a]atrim=start_sample=43200:end_sample=67200,asetpts=PTS-STARTPTS[p1];[p0][p1]concat=n=2:v=0:a=1[out]');
   assert.deepEqual(planTrim(samplesOf(TAKE), RATE, TRIM), plan, 'the same take, the same cut');
   const loose = planTrim(samplesOf(TAKE), RATE, trimSettings({ lead: 0, tail: 0, maxPause: 2 }));
-  assert.deepEqual(loose.keep, [[8000, 60800]], 'no lead, no tail, the pause kept whole');
+  assert.deepEqual([loose.keep, loose.pad], [[[8000, 60800]], [0, 0]], 'no lead, no tail, the pause kept whole');
 });
 
-test('trim maths: a short lead stays whole, a pause under the cap is untouched, a click does not start a take, a short sound inside is never cut', () => {
+test('trim maths: every clip gets exactly the lead and the tail — a take that starts or ends at once is padded with silence', () => {
+  const sudden = planTrim(samplesOf([[1, 0.5], [0.1, 0]]), RATE, TRIM);
+  assert.deepEqual([sudden.keep, sudden.pad], [[[0, 17600]], [3200, 4800]]);
+  assert.deepEqual(sudden.trim, { length: 1.1, clip: 1.6, kept: 1.1, cutBefore: 0, cutAfter: 0, padBefore: 0.2, padAfter: 0.3, pauses: [] });
+  assert.equal(cutFilter(sudden.keep, sudden.pad), '[0:a]atrim=start_sample=0:end_sample=17600,asetpts=PTS-STARTPTS[p0];[p0]concat=n=1:v=0:a=1,adelay=delays=3200S:all=1,apad=pad_len=4800[out]');
+  const late = planTrim(samplesOf([[0.5, 0], [1, 0.5]]), RATE, TRIM);
+  assert.deepEqual(late.pad, [0, 6400]);
+  assert.equal(cutFilter(late.keep, late.pad), '[0:a]atrim=start_sample=4800:end_sample=24000,asetpts=PTS-STARTPTS[p0];[p0]concat=n=1:v=0:a=1,apad=pad_len=6400[out]');
+  assert.equal(planTrim(samplesOf([[1, 0.5], [0.5, 0]]), RATE, TRIM).pad[1], 0, 'tail long enough: nothing added after');
+  for (const take of [TAKE, [[1, 0.5]], [[0.05, 0], [0.4, 0.5], [2, 0], [0.4, 0.5]]]) {
+    const samples = samplesOf(take), plan = planTrim(samples, RATE, TRIM), clip = cutOf(samples, plan.keep, plan.pad);
+    const { loud, size } = loudWindows(clip, RATE, TRIM.threshold);
+    assert.equal(loud.indexOf(true) * size, TRIM.lead * RATE, 'exactly the lead before the first sound');
+    assert.equal(clip.length - (loud.lastIndexOf(true) + 1) * size, TRIM.tail * RATE, 'exactly the tail after the last');
+    assert.equal(clip.length / RATE, plan.trim.clip);
+  }
+});
+
+test('trim maths: a short lead stays whole, a pause under the cap is untouched, a short sound inside is never cut', () => {
   const near = planTrim(samplesOf([[0.1, 0], [0.5, 0.5], [0.4, 0], [0.5, 0.5], [0.2, 0]]), RATE, TRIM);
-  assert.deepEqual(near.keep, [[0, 27200]]);
-  assert.deepEqual(near.trim, { length: 1.7, kept: 1.7, cutBefore: 0, cutAfter: 0, pauses: [] });
-  const click = planTrim(samplesOf([[0.5, 0], [0.03, 0.8], [0.5, 0], [1, 0.5], [0.5, 0]]), RATE, TRIM);
-  assert.equal(click.trim.cutBefore, 0.83, 'the click before the first word is cut with the silence');
-  assert.equal(planTrim(samplesOf([[0.5, 0], [0.03, 0.8], [0.5, 0], [1, 0.5], [0.5, 0]]), RATE, trimSettings({ minSound: 0 })).trim.cutBefore, 0.3, 'minSound 0: the click starts the take');
+  assert.deepEqual([near.keep, near.pad], [[[0, 27200]], [1600, 3200]]);
+  assert.deepEqual(near.trim, { length: 1.7, clip: 2, kept: 1.7, cutBefore: 0, cutAfter: 0, padBefore: 0.1, padAfter: 0.2, pauses: [] });
   const inner = planTrim(samplesOf([[0.3, 0], [0.5, 0.5], [1, 0], [0.05, 0.5], [1, 0], [0.5, 0.5], [0.3, 0]]), RATE, TRIM);
   assert.deepEqual(inner.trim.pauses, [{ at: 0.8, was: 1, now: 0.6 }, { at: 1.85, was: 1, now: 0.6 }], 'each side of the short sound is a pause of its own');
   assert.equal(inner.trim.kept, 2.75);
   assert.ok(inner.keep.some(([a, b]) => a <= 1.8 * RATE && b >= 1.85 * RATE), 'the 0.05 s sound is kept');
+});
+
+test('trim maths: a short word at either end is kept; a click farther than maxPause from the speech is cut', () => {
+  const word = planTrim(samplesOf([[0.5, 0], [0.08, 0.5], [0.3, 0], [1, 0.5], [0.5, 0]]), RATE, TRIM);   // "A, …": 80 ms, a 0.3 s pause
+  assert.equal(word.trim.cutBefore, 0.3, 'the 80 ms word starts the take');
+  assert.ok(word.keep[0][0] <= 0.5 * RATE);
+  assert.equal(planTrim(samplesOf([[0.5, 0], [0.08, 0.5], [0.3, 0], [0.08, 0.5], [0.3, 0], [1, 0.5], [0.5, 0]]), RATE, TRIM).trim.cutBefore, 0.3, 'two short words in a row');
+  assert.equal(planTrim(samplesOf([[0.5, 0], [1, 0.5], [0.3, 0], [0.08, 0.5], [0.5, 0]]), RATE, TRIM).trim.cutAfter, 0.1, 'a short last word ("so.") ends the take');
+  const click = planTrim(samplesOf([[0.5, 0], [0.03, 0.8], [1, 0], [1, 0.5], [0.5, 0]]), RATE, TRIM);
+  assert.equal(click.trim.cutBefore, 1.33, 'a click 1 s before the first word is cut with the silence');
+  assert.equal(planTrim(samplesOf([[0.5, 0], [1, 0.5], [1, 0], [0.03, 0.8], [0.5, 0]]), RATE, TRIM).trim.cutAfter, 1.13, 'and one 1 s after the last');
+  assert.equal(planTrim(samplesOf([[0.5, 0], [0.03, 0.8], [1, 0], [1, 0.5], [0.5, 0]]), RATE, trimSettings({ minSound: 0 })).trim.cutBefore, 0.3, 'minSound 0: the click starts the take');
+  assert.equal(planTrim(samplesOf([[0.5, 0], [0.08, 0.5], [0.5, 0]]), RATE, TRIM), null, 'one short sound alone: no speech for minSound');
+  assert.equal(planTrim(samplesOf([[0.5, 0], [0.08, 0.5], [0.5, 0]]), RATE, trimSettings({ minSound: 0.05 })).trim.clip, 0.68, 'a one-word take, with minSound shorter');
 });
 
 test('trim maths: under the threshold is silence; a take with no sound has no cut; windows of 10 ms, the last one short', () => {
@@ -118,6 +156,7 @@ test('trim maths: under the threshold is silence; a take with no sound has no cu
   assert.equal(planTrim(hum, RATE, TRIM), null);
   assert.equal(planTrim(samplesOf([[1, 0]]), RATE, TRIM), null);
   assert.deepEqual(planTrim(hum, RATE, trimSettings({ threshold: -70 })).trim.kept, 1, 'heard at -70 dB');
+  assert.equal(planTrim(hum, RATE, trimSettings({ threshold: -70 })).trim.clip, 1.6, 'with the lead and tail added');
   const { loud, size } = loudWindows(samplesOf([[0.01, 0], [0.0003, 0.5]]), RATE, -45);
   assert.equal(size, 160);
   assert.deepEqual(loud, [false, true]);
@@ -159,6 +198,16 @@ test('find: a line finds its take by its words — case, punctuation and spacing
   assert.doesNotThrow(() => engine.preflight([{ id: 'k1', text: 'hello   world' }, { id: 'k2', text: 'Hello, World.' }]));
 });
 
+test('find: a line is matched word by word — "a part" is not "apart"', () => {
+  assert.equal(matchKey('  Hello,   world!  '), 'hello world');
+  assert.equal(matchKey('It’s “three” — now.'), 'its three now');
+  assert.equal(matchKey('— …'), '');
+  const takes = takesFolder({ 'A part.': ['1.wav', TAKE], 'Apart.': ['2.wav', TAKE] }), book = readTakeBook(takes);
+  assert.deepEqual(findTakes([{ id: 'k1', text: 'a part' }, { id: 'k2', text: 'apart' }], book).map((t) => t.file), ['1.wav', '2.wav']);
+  assert.equal(findTakes([{ id: 'k3', text: 'a-part' }], book)[0].file, '2.wav', 'a hyphen joins: one word');
+  assert.throws(() => findTakes([{ id: 'k4', text: 'a parts' }], book), /1 line has no take/);
+});
+
 test('find: every line with no take is refused at once, as lines to paste into takes.json', () => {
   const takes = takesFolder({ 'One.': ['1.wav', TAKE] }), engine = recordedTakes({ kit: dir, takes, run: tools().run });
   const scenes = [{ id: 'k1', text: 'One.' }, { id: 'k2', text: 'Two.' }, { id: 'k3', text: 'It’s “three”.' }, { id: 'k4', text: 'Two.' }];
@@ -188,6 +237,34 @@ test('find: takes.json is refused, naming the fix — absent, not JSON, not an o
   assert.throws(() => recordedTakes({ kit: dir, takes: folder, manifest: 'lines.json', trim: { pause: 1 } }), /trim\.pause is not a setting/);
   assert.throws(() => recordedTakes({ kit: dir }), { name: 'TypeError', message: 'recordedTakes: takes is the folder of your recordings and their takes.json (got undefined)' });
   assert.throws(() => recordedTakes({ takes: folder }), /^TypeError: recordedTakes: kit is the voice kit folder, whose Python runs the aligner \(got undefined\)/);
+});
+
+test('find: no take may be outside the takes folder or other than a file', () => {
+  const takes = takesFolder({ 'One.': ['1.wav', TAKE] }), book = path.join(takes, 'takes.json'), open = () => recordedTakes({ kit: dir, takes, run: tools().run });
+  writeFileSync(path.join(dir, 'outside.wav'), wavOf(TAKE));
+  mkdirSync(path.join(takes, 'sub'));
+  writeFileSync(path.join(takes, 'sub', 'deep.wav'), wavOf(TAKE));
+  writeFileSync(book, JSON.stringify({ 'One.': '../outside.wav', 'Two.': path.join(dir, 'outside.wav'), 'Three.': 'sub/../../outside.wav' }));
+  assert.throws(open, { message: `recordedTakes: takes.json names 3 files outside ${takes}: ../outside.wav, ${path.join(dir, 'outside.wav')}, sub/../../outside.wav — keep every take inside the takes folder` });
+  writeFileSync(book, JSON.stringify({ 'One.': 'sub', 'Two.': '.' }));
+  assert.throws(open, { message: 'recordedTakes: takes.json names 2 paths that are not files: sub, . — name each line\'s recording' });
+  writeFileSync(book, JSON.stringify({ 'One.': 'sub/deep.wav', 'Two.': '..take.wav' }));
+  assert.throws(open, /names 1 recording that .+ does not have: \.\.take\.wav/, 'a name that starts with two dots is inside');
+  writeFileSync(path.join(takes, '..take.wav'), wavOf(TAKE));
+  assert.equal(open().name, 'recorded', 'a take in a folder inside the takes folder');
+});
+
+test('a work folder over the takes is refused: it is emptied before each batch', async () => {
+  const takes = takesFolder({ 'One two.': ['1.wav', TAKE] }), { calls, run } = tools(), engine = recordedTakes({ kit: dir, takes, run });
+  const scenes = [{ id: 'k1', text: 'One two.' }], said = (work, how) => `recordedTakes: the work folder ${work} ${how} the takes folder ${takes}, and a work folder is emptied before each batch — give work a folder of its own, or leave it out`;
+  assert.throws(() => engine.preflight(scenes, { work: takes }), { message: said(takes, 'is') });
+  assert.throws(() => engine.preflight(scenes, { work: dir }), { message: said(dir, 'holds') });
+  assert.throws(() => engine.synthesize(scenes, { work: path.join(takes, 'w') }), { message: said(path.join(takes, 'w'), 'is inside') });
+  await assert.rejects(voiceClips(['One two.'], { cache: path.join(dir, 'cache'), profile: engine.profile, engine, work: takes }), { message: said(takes, 'is') });
+  assert.ok(existsSync(path.join(takes, '1.wav')) && existsSync(path.join(takes, 'takes.json')), 'the takes are untouched');
+  assert.equal(calls.length, 0);
+  assert.doesNotThrow(() => engine.preflight(scenes, { work: path.join(dir, 'takes-work') }), 'a folder beside the takes');
+  assert.doesNotThrow(() => engine.preflight(scenes), 'no work folder: a temporary one');
 });
 
 test('the session profile: the same takes, the same id; a take recorded again, a new line or another trim setting, a new one — never a cloned voice\'s key', () => {
@@ -226,9 +303,9 @@ test('synthesize: find → trim → align → check, each take lined up to its t
   const keepA = [[4800, 28800], [43200, 67200]];
   assert.deepEqual(calls.map((c) => [c.cmd, c.args]), [
     ['ffmpeg', decodeArgs(path.join(takes, 'a.wav'), path.join(work, 'decoded', 'ka.wav'))],
-    ['ffmpeg', cutArgs(path.join(work, 'decoded', 'ka.wav'), keepA, path.join(work, 'audio', 'ka.wav'))],
+    ['ffmpeg', cutArgs(path.join(work, 'decoded', 'ka.wav'), { keep: keepA, pad: [0, 0] }, path.join(work, 'audio', 'ka.wav'))],
     ['ffmpeg', decodeArgs(path.join(takes, 'b.m4a'), path.join(work, 'decoded', 'kb.wav'))],
-    ['ffmpeg', cutArgs(path.join(work, 'decoded', 'kb.wav'), [[0, 22400]], path.join(work, 'audio', 'kb.wav'))],
+    ['ffmpeg', cutArgs(path.join(work, 'decoded', 'kb.wav'), { keep: [[0, 22400]], pad: [1600, 1600] }, path.join(work, 'audio', 'kb.wav'))],
     [path.join(dir, 'kit', '.venv-voice', 'bin', 'python'), [ALIGNER, '--scenes', path.join(work, 'scenes.json'), '--out', work]],
   ]);
   assert.deepEqual(calls[0].opts, { stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' });
@@ -239,11 +316,12 @@ test('synthesize: find → trim → align → check, each take lined up to its t
   assert.equal(readWav(results[0].audio).samples.length, 48000, 'the clip is the cut: 3 s');
   assert.deepEqual(results[0], { id: 'ka', audio: path.join(work, 'audio', 'ka.wav'), duration: 3,
     words: [{ text: 'Hello', start: 0, end: 1.5 }, { text: 'world.', start: 1.5, end: 3 }],
-    take: { file: 'a.wav', trim: { length: 4.8, kept: 3, cutBefore: 0.3, cutAfter: 0.6, pauses: [{ at: 1.5, was: 1.5, now: 0.6 }] },
+    take: { file: 'a.wav', trim: { length: 4.8, clip: 3, kept: 3, cutBefore: 0.3, cutAfter: 0.6, padBefore: 0, padAfter: 0, pauses: [{ at: 1.5, was: 1.5, now: 0.6 }] },
       check: { words: 2, meanScore: 0.9, lowWords: [['world.', 0.21]], letterMatch: 1 } } });
+  assert.equal(readWav(results[1].audio).samples.length, 25600, 'the short take, with its lead and tail made whole: 1.6 s');
   assert.deepEqual(lines, [
     'take a.wav: 4.80 s → 3.00 s (cut 0.30 s before, 0.60 s after; pauses capped to 0.60 s: 1.50 s at 1.50 s) · 2 words aligned, mean score 0.9, letters 1 · LOW, listen: "world." 0.21',
-    'take b.m4a: 1.40 s → 1.40 s (cut 0.00 s before, 0.00 s after) · 2 words aligned, mean score 0.9, letters 1',
+    'take b.m4a: 1.40 s → 1.60 s (cut 0.00 s before, 0.00 s after; silence added 0.10 s before, 0.10 s after) · 2 words aligned, mean score 0.9, letters 1',
   ]);
   const quiet = recordedTakes({ kit: 'kit', takes, run: tools().run, env: { HF_HUB_OFFLINE: '0' } });
   assert.equal(quiet.synthesize([{ id: 'kb', text: 'Short one.' }], { work: path.join(dir, 'w2') }).length, 1, 'no log: nothing said, and work is made when absent');
@@ -261,6 +339,9 @@ test('the aligner\'s own setting of HF_HUB_OFFLINE is kept, and it runs in the k
     assert.equal(python.args.at(-1), path.join(process.cwd(), 'rel', 'work'));
     assert.equal(calls[0].args[calls[0].args.indexOf('-i') + 1], path.join(process.cwd(), 'takes', 'a.wav'));
     assert.ok(takes.endsWith(path.join('takes')));
+    const own = tools();
+    recordedTakes({ kit: 'kits/voice', takes: 'takes', python: '/opt/voice/bin/python', run: own.run }).synthesize([{ id: 'k1', text: 'One two.' }], { work: 'rel/work2' });
+    assert.equal(own.calls.at(-1).cmd, '/opt/voice/bin/python', 'a Python given whole is not put under the kit');
   } finally {
     process.chdir(was);
   }
@@ -282,7 +363,7 @@ test('trim: a take with no sound is refused before the aligner runs — every on
   const takes = takesFolder({ 'Silent one.': ['s.wav', [[2, 0]]], 'Humming two.': ['h.wav', [[2, 0.001]]], 'Fine line.': ['f.wav', TAKE] }), { calls, run } = tools();
   const scenes = ['Silent one.', 'Humming two.', 'Fine line.'].map((text, i) => ({ id: `k${i}`, text }));
   assert.throws(() => recordedTakes({ kit: dir, takes, run }).synthesize(scenes, { work: path.join(dir, 'w') }), { message:
-    'recordedTakes: no sound louder than -45 dB for 0.1 s in s.wav ("Silent one."), h.wav ("Humming two.") — record them again, or set trim.threshold lower' });
+    'recordedTakes: no sound louder than -45 dB for 0.1 s in s.wav ("Silent one."), h.wav ("Humming two.") — record them again, or set trim.threshold lower (or trim.minSound shorter, for a take of one short word)' });
   assert.ok(calls.every((c) => c.cmd === 'ffmpeg'), 'the aligner never ran');
 });
 
@@ -307,7 +388,7 @@ test('the cache keeps recorded takes under their session, with their record — 
   assert.equal(clip.key, clipKey('Hello world.', engine.profile));
   assert.equal(clip.duration, 3);
   assert.deepEqual(clip.sentences, [0]);
-  assert.deepEqual(clip.take, { file: 'a.wav', trim: { length: 4.8, kept: 3, cutBefore: 0.3, cutAfter: 0.6, pauses: [{ at: 1.5, was: 1.5, now: 0.6 }] },
+  assert.deepEqual(clip.take, { file: 'a.wav', trim: { length: 4.8, clip: 3, kept: 3, cutBefore: 0.3, cutAfter: 0.6, padBefore: 0, padAfter: 0, pauses: [{ at: 1.5, was: 1.5, now: 0.6 }] },
     check: { words: 2, meanScore: 0.9, lowWords: [], letterMatch: 1 } });
   assert.equal(readWav(clip.audio).samples.length, 48000);
   assert.equal(clipFor('Hello world.', { cache, profile: CLONED }), null, 'the cloned voice\'s key finds nothing');
@@ -327,6 +408,20 @@ test('the cache never crosses voices: a recorded engine with another profile, a 
   assert.equal((await voiceClips(['Hi there.'], { cache, profile: { ...engine.profile, note: 'a copy' }, engine })).voiced, 1, 'a copy of the profile is the same recipe');
 });
 
+test('the cache stays as it was for every other caller: no engine when all is cached, an engine with a profile field of its own', async () => {
+  const cache = path.join(dir, 'cache'), takes = takesFolder({ 'Hi there.': ['a.wav', TAKE] }), recorded = recordedTakes({ kit: dir, takes, run: tools().run });
+  await voiceClips(['Hi there.'], { cache, profile: recorded.profile, engine: recorded });
+  assert.deepEqual(await voiceClips(['Hi there.'], { cache, profile: recorded.profile }), { wanted: 1, todo: 0, voiced: 0 }, 'a reader with no engine: all cached');
+  const cloud = { name: 'cloud', profile: { id: 'a cloud voice', region: 'eu' }, synthesize: (scenes, { work }) => scenes.map((sc) => {
+    const audio = path.join(work, `${sc.id}.wav`);
+    writeFileSync(audio, 'x');
+    return { id: sc.id, audio, duration: 1 };
+  }) };
+  assert.deepEqual(await voiceClips(['Hi there.'], { cache, profile: CLONED, engine: cloud }), { wanted: 1, todo: 1, voiced: 1 }, 'its own profile field is its business');
+  assert.deepEqual(await voiceClips(['Hi there.'], { cache, profile: CLONED }), { wanted: 1, todo: 0, voiced: 0 });
+  await assert.rejects(voiceClips(['Not voiced.'], { cache, profile: CLONED }), TypeError, 'no engine and a text to voice: as before');
+});
+
 test('the cache hands every scene to preflight before the first batch: every missing line in one refusal', async () => {
   const takes = takesFolder({ 'One.': ['1.wav', TAKE] }), { calls, run } = tools();
   const engine = recordedTakes({ kit: dir, takes, run });
@@ -341,18 +436,41 @@ test('the cache hands every scene to preflight before the first batch: every mis
 
 const HAS_FFMPEG = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0;
 
-test('the real ffmpeg cuts exactly as planned — the stand-in above is ffmpeg\'s cut — and decodes an M4A take', { skip: !HAS_FFMPEG && 'ffmpeg is not installed' }, () => {
-  const takes = takesFolder({ 'Hello world.': ['a.wav', TAKE] }), work = path.join(dir, 'real'), faked = path.join(dir, 'faked');
+// On CI the workflow installs ffmpeg, so this test must run there: it fails rather than skips.
+test('the real ffmpeg cuts exactly as planned — the stand-in above is ffmpeg\'s cut, padding and all — and decodes an M4A take', { skip: !HAS_FFMPEG && !process.env.CI && 'ffmpeg is not installed' }, () => {
+  assert.ok(HAS_FFMPEG, 'ffmpeg is not installed on CI: the workflow must install it (apt-get install -y ffmpeg)');
+  const takes = takesFolder({ 'Hello world.': ['a.wav', TAKE], 'At once.': ['b.wav', [[1, 0.5], [0.1, 0]]] }), work = path.join(dir, 'real'), faked = path.join(dir, 'faked');
   const real = (cmd, args, opts) => (cmd === 'ffmpeg' ? spawnSync(cmd, args, opts) : { status: 0 });
-  const found = [{ id: 'ka', text: 'Hello world.', file: 'a.wav', path: path.join(takes, 'a.wav') }];
-  const [cut] = trimTakes(found, work, TRIM, { ffmpeg: 'ffmpeg', run: real });
+  const found = [{ id: 'ka', text: 'Hello world.', file: 'a.wav', path: path.join(takes, 'a.wav') }, { id: 'kb', text: 'At once.', file: 'b.wav', path: path.join(takes, 'b.wav') }];
+  const [cut, padded] = trimTakes(found, work, TRIM, { ffmpeg: 'ffmpeg', run: real });
   trimTakes(found, faked, TRIM, { ffmpeg: 'ffmpeg', run: (cmd, args) => fakeFfmpeg(args) });
   assert.deepEqual(cut.trim.kept, 3);
   assert.deepEqual(readWav(path.join(work, cut.audio)), readWav(path.join(faked, cut.audio)), 'sample for sample');
+  assert.deepEqual([padded.trim.padBefore, padded.trim.padAfter, padded.trim.clip], [0.2, 0.3, 1.6]);
+  assert.deepEqual(readWav(path.join(work, padded.audio)), readWav(path.join(faked, padded.audio)), 'the padding too, sample for sample');
   const m4a = path.join(takes, 'a.m4a');
   assert.equal(spawnSync('ffmpeg', ['-v', 'error', '-y', '-i', path.join(takes, 'a.wav'), '-c:a', 'aac', m4a]).status, 0);
   const [fromM4a] = trimTakes([{ ...found[0], file: 'a.m4a', path: m4a }], path.join(dir, 'm4a'), TRIM, { ffmpeg: 'ffmpeg', run: real });
   assert.ok(Math.abs(fromM4a.trim.kept - 3) < 0.05, `an M4A take is cut as its WAV is (kept ${fromM4a.trim.kept} s)`);
   trimTakes(found, path.join(dir, 'again'), TRIM, { ffmpeg: 'ffmpeg', run: real });
   assert.deepEqual(readFileSync(path.join(dir, 'again', cut.audio)), readFileSync(path.join(work, cut.audio)), 'the same take, the same bytes');
+});
+
+// Opt-in: NARRATION_KIT=<a voice kit with .venv-voice and the MMS_FA weights> runs the real aligner. CI does not set it.
+const KIT = process.env.NARRATION_KIT;
+
+test('the real aligner: a take that says nothing aligns with every word low; one too short for its words is refused', { skip: !KIT && 'set NARRATION_KIT to a voice kit to run the real aligner' }, () => {
+  const tone = 'Hello there, world.', crowded = 'This line has far too many words to fit into so short a take of sound.';
+  const takes = takesFolder({ [tone]: ['tone.wav', [[0.5, 0], [2, 0.4], [0.5, 0]]], [crowded]: ['short.wav', [[0.05, 0.4]]] });
+  const engine = recordedTakes({ kit: KIT, takes, trim: { minSound: 0.03 } });
+  assert.throws(() => engine.synthesize([{ id: 'k1', text: tone }, { id: 'k2', text: crowded }], { work: path.join(dir, 'w1') }),
+    /recordedTakes refused 1 take\(s\):\n {2}short\.wav \("This line.+"\): the aligner could not fit its words to it/);
+  const [heard] = engine.synthesize([{ id: 'k1', text: tone }], { work: path.join(dir, 'w2') });
+  assert.equal(heard.duration, 2.6, 'the lead, the tone, the tail');
+  assert.deepEqual(heard.words.map((x) => x.text), ['Hello', 'there,', 'world.']);
+  assert.ok(heard.words.every((x) => x.start >= 0 && x.end <= heard.duration));
+  assert.equal(heard.take.check.lowWords.length, 3, 'a tone says none of its words');
+  assert.ok(heard.take.check.letterMatch < 0.5);
+  const timings = JSON.parse(readFileSync(path.join(dir, 'w2', 'timings.json'), 'utf8'));
+  assert.deepEqual([timings.schemaVersion, timings.provider, timings.voiceProfile, timings.scenes[0].alignment.method], [1, 'recorded', engine.profile.id, 'forced-alignment-mms']);
 });

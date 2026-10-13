@@ -5,15 +5,13 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { failure } from './spawn.js';
+import { wordsOf } from './takes.js';
 
 /** The aligner this package ships (align_take.py, beside this file). */
 export const ALIGNER = fileURLToPath(new URL('./align_take.py', import.meta.url));
 
 /** The letters the aligner times for a word (align_take.py · norm, which is tts_chatterbox.py · norm). */
 const letters = (word) => word.toLowerCase().replaceAll('’', "'").replace(/[^a-z']/g, '').replace(/^'+|'+$/g, '');
-
-/** A line's words, as the aligner splits them (on white space). */
-export const wordsOf = (text) => text.trim().split(/\s+/);
 
 /** Refuses, all at once, the lines with a word the aligner cannot time (no letters: a digit, a symbol). */
 export function refuseUnalignable(scenes) {
@@ -30,9 +28,9 @@ export function refuseUnalignable(scenes) {
 export function alignTakes(cut, { dir, kit, python, env, run, profile }) {
   const board = path.join(dir, 'scenes.json');
   writeFileSync(board, JSON.stringify({ voiceProfile: profile.id, scenes: cut.map((t) => ({ id: t.id, text: t.text, audio: t.audio })) }, null, 1));
-  const done = run(path.join(kit, python), [ALIGNER, '--scenes', board, '--out', dir], { cwd: kit, stdio: 'inherit', env: { ...env, HF_HUB_OFFLINE: env.HF_HUB_OFFLINE ?? '1' } });
+  const done = run(path.resolve(kit, python), [ALIGNER, '--scenes', board, '--out', dir], { cwd: kit, stdio: 'inherit', env: { ...env, HF_HUB_OFFLINE: env.HF_HUB_OFFLINE ?? '1' } });
   const why = failure(done);
-  if (why) throw new Error(`the take aligner failed (${why}) with ${path.join(kit, python)}: it needs the kit's voice Python, with torch and torchaudio (the kit's setup-voice.sh), and the MMS_FA model on disk`);
+  if (why) throw new Error(`the take aligner failed (${why}) with ${path.resolve(kit, python)}: it needs the kit's voice Python, with torch and torchaudio (the kit's setup-voice.sh), and the MMS_FA model on disk`);
   const read = (name) => JSON.parse(readFileSync(path.join(dir, name), 'utf8')).scenes;
   return { timings: new Map(read('timings.json').map((s) => [s.id, s])), checks: new Map(read('word-check.json').map((c) => [c.scene, c])) };
 }
@@ -65,9 +63,11 @@ export function checkTakes(cut, { timings, checks }, dir) {
 
 const s = (x) => `${x.toFixed(2)} s`;
 
-/** One line a person reads: what was cut from a take, and how its words were heard. */
+/** One line a person reads: what was cut from a take and added to it, and how its words were heard. */
 export function takeLine({ take: { file, trim, check } }) {
-  const pauses = trim.pauses.map((p) => `${s(p.was)} at ${s(p.at)}`), low = check.lowWords.map(([w, x]) => `"${w}" ${x}`);
-  return `take ${file}: ${s(trim.length)} → ${s(trim.kept)} (cut ${s(trim.cutBefore)} before, ${s(trim.cutAfter)} after${pauses.length ? `; pauses capped to ${s(trim.pauses[0].now)}: ${pauses.join(', ')}` : ''})`
+  const edits = [`cut ${s(trim.cutBefore)} before, ${s(trim.cutAfter)} after`], low = check.lowWords.map(([w, x]) => `"${w}" ${x}`);
+  if (trim.padBefore || trim.padAfter) edits.push(`silence added ${s(trim.padBefore)} before, ${s(trim.padAfter)} after`);
+  if (trim.pauses.length) edits.push(`pauses capped to ${s(trim.pauses[0].now)}: ${trim.pauses.map((p) => `${s(p.was)} at ${s(p.at)}`).join(', ')}`);
+  return `take ${file}: ${s(trim.length)} → ${s(trim.clip)} (${edits.join('; ')})`
     + ` · ${check.words} words aligned, mean score ${check.meanScore}, letters ${check.letterMatch}${low.length ? ` · LOW, listen: ${low.join(', ')}` : ''}`;
 }

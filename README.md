@@ -118,24 +118,25 @@ port, so nothing downstream changes.
 import { recordedTakes, voiceClips, clipFor } from 'footprint-narration/voice';
 
 const takes = recordedTakes({ kit: '../voice-kit', takes: 'takes' });          // your recordings + the kit's aligner
-await voiceClips(texts, { cache: 'voice-cache', profile: takes.profile, engine: takes });
+await voiceClips(texts, { cache: 'voice-cache', profile: takes.profile, engine: takes, batch: 50 });
 clipFor(texts[3], { cache: 'voice-cache', profile: takes.profile }).take;
-// { file: '004.m4a', trim: { length: 6.1, kept: 4.35, cutBefore: 0.82, cutAfter: 0.31, pauses: [{ at: 2.4, was: 1.62, now: 0.6 }] },
-//   check: { words: 14, meanScore: 0.86, lowWords: [['latency', 0.21]], letterMatch: 0.97 } }
+// { file: '004.m4a', trim: { length: 6.1, clip: 4.35, kept: 4.35, cutBefore: 0.82, cutAfter: 0.31, padBefore: 0, padAfter: 0,
+//   pauses: [{ at: 2.4, was: 1.62, now: 0.6 }] }, check: { words: 14, meanScore: 0.86, lowWords: [['latency', 0.21]], letterMatch: 0.97 } }
 ```
 
 The folder holds one recording per line (WAV or M4A, any name) and a `takes.json` that maps each line, as it is
-said, to its file: `{ "One frame takes sixteen point six seven milliseconds.": "004.m4a" }`. A line finds its take
-by its words, so case and punctuation do not matter. A line with no take is refused, with every such line listed
+said, to its file: `{ "One frame takes sixteen point six seven milliseconds.": "004.m4a" }`, every file inside the
+folder. A line finds its take word by word, so case and punctuation do not matter, while "a part" is not "apart". A line with no take is refused, with every such line listed
 and ready to paste into `takes.json`. The file names stay your recorder's, and an edited line is listed again
 instead of being cut from a take of the old words. Each take then goes through four steps:
 
 - **find**: its take in `takes.json`.
-- **trim**: with ffmpeg, keep the kit's 0.2 s before the first sound and 0.4 s after the last, and shorten every
-  pause longer than 0.6 s to 0.6 s. The cut is computed in whole samples, so the same take always gives the same
-  bytes.
+- **trim**: with ffmpeg, give every clip exactly the kit's 0.2 s before the first sound and 0.4 s after the last
+  (a longer silence is cut, a shorter one padded), and shorten every pause longer than 0.6 s to 0.6 s. A short word
+  at either end is kept; a click farther than 0.6 s from the speech is cut. The cut is computed in whole samples, so
+  the same take always gives the same bytes.
 - **align**: the kit's own MMS_FA aligner runs offline in the kit's Python, through `align_take.py`, which ships
-  here.
+  here. It never downloads: without the aligner's weights on disk, it refuses (run the kit's setup once).
 - **check**: as the kit's `check_words.py` does it. A take the aligner cannot fit to its words is refused; a
   low-scored word is reported, for you to listen to.
 
@@ -143,8 +144,20 @@ What each step decided is the clip's `take` record, kept beside it in the cache.
 
 The session's `profile` is a hash of the takes' bytes and the trim settings, so a recorded line and a cloned line of
 the same text never share a key, and a line recorded again is never served stale. `voiceClips` refuses a recorded
-engine with any other profile, and a recorded profile with any other engine. The voice is yours alone: never use
-this for anyone else's.
+engine with any other profile, and a recorded profile with any other engine. It also refuses a `work` folder that is
+the takes folder, holds it or lies inside it, because a work folder is emptied before each batch.
+
+- **Use a large `batch`.** Each batch loads the aligner's model once, about 2 s here, so `batch: 50` saves a load
+  every few lines. The default stays 4 because batching is the cache's rule for every engine, and an interrupted run
+  keeps each finished batch either way.
+- **Reading clips without the takes.** `takes.profile` is two strings. Save it with the deck, and a machine without
+  the recordings reads every clip with `clipFor(text, { cache, profile })`, or `voiceClips` with no engine.
+- **The limit:** the session cannot be pinned by name. Any change to the takes (a line recorded again, a new line, a
+  trim setting) gives a new session, and every line is cut and aligned again. That takes seconds per line and
+  generates no voice. A pinned id would let a line recorded again keep its old clip, because the cache never asks an
+  engine about a clip it already has.
+
+The voice is yours alone: never use this for anyone else's.
 
 ## API
 

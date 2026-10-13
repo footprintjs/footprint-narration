@@ -168,6 +168,8 @@ test('the kit adapter hands the kit absolute paths only: it runs in its own fold
     assert.equal(seen.cmd, path.join(process.cwd(), 'kits', 'voice', '.venv-voice', 'bin', 'python'));
     assert.equal(seen.args[seen.args.indexOf('--storyboard') + 1], path.join(process.cwd(), 'rel', 'work', 'storyboard.json'));
     assert.equal(seen.args.at(-1), path.join(process.cwd(), 'rel', 'work'));
+    chatterboxKit({ kit: 'kits/voice', python: '/opt/voice/bin/python', run }).synthesize([{ id: 'k1', text: 'x' }], { work: 'rel/work' });
+    assert.equal(seen.cmd, '/opt/voice/bin/python', 'a Python given whole is not put under the kit');
   } finally {
     process.chdir(was);
   }

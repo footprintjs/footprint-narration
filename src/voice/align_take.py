@@ -13,13 +13,29 @@ aligned whole, not sentence by sentence.
 scenes.json: {"voiceProfile": id, "scenes": [{"id", "text", "audio" (a 16-bit PCM WAV, relative to --out)}]}
 Writes, in --out: timings.json (the kit's shape: per scene id, duration, audio, provider, words [{text, start, end}],
 alignment) and word-check.json (check_words.py's shape; a take the aligner could not fit to its text has "failed",
-saying why, and the other takes are still aligned). Nothing is downloaded (HF_HUB_OFFLINE) or uploaded.
+saying why, and the other takes are still aligned).
+
+Local only: nothing is uploaded, and nothing is downloaded. The aligner's weights (about 1.2 GB) come through
+torch.hub from dl.fbaipublicfiles.com, which HF_HUB_OFFLINE does not stop, so this script looks for them in
+torch.hub's cache first and refuses when they are not there: the kit's setup fetches them once.
 """
 import argparse, difflib, json, re, sys, wave
 from pathlib import Path
+from urllib.parse import urlparse
 import numpy as np, torch, torchaudio
 
 LOW = 0.3  # check_words.py · LOW
+MMS_FA_URL = 'https://dl.fbaipublicfiles.com/mms/torchaudio/ctc_alignment_mling_uroman/model.pt'  # torchaudio's MMS_FA
+
+
+def weights_on_disk(bundle):
+    """Refuses, before the model is built, when the aligner's weights are not where torch.hub keeps them
+    (torch.hub.load_state_dict_from_url: <torch.hub.get_dir()>/checkpoints/<the URL's file name>): it would download."""
+    url = getattr(bundle, '_path', MMS_FA_URL)  # torchaudio's own field for the weights' URL
+    path = Path(torch.hub.get_dir()) / 'checkpoints' / Path(urlparse(url).path).name
+    if not path.is_file():
+        raise RuntimeError(f"The MMS_FA aligner weights are not at {path}, and this script never downloads: run the kit's setup once "
+                           f"(it fetches them from {url}), then align offline.")
 
 
 def norm(word):
@@ -87,6 +103,7 @@ def main():
     out = Path(a.out)
     board = json.loads(Path(a.scenes).read_text())
     bundle = torchaudio.pipelines.MMS_FA
+    weights_on_disk(bundle)
     parts = (bundle.get_model(with_star=False), bundle.get_tokenizer(), bundle.get_aligner(), bundle.get_labels(star=None), bundle.sample_rate)
     entries, checks = [], []
     for scene in board['scenes']:

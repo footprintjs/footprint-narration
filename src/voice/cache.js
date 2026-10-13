@@ -26,14 +26,17 @@ export function clipFor(text, { cache, profile }) {
 const sameRecipe = (a, b) => clipKey('', a) === clipKey('', b);
 
 /**
- * A recorded session's clips are the owner's own takes, so the two never cross: an engine bound to a profile
- * (recordedTakes) fills that profile's clips only, and a recorded profile is filled by its own engine only.
+ * A recorded session's clips are the owner's own takes, so the two never cross: a recorded engine (its profile is
+ * a recorded session's — recordedTakes) fills that profile's clips only, and a recorded profile is filled by its own
+ * engine only. Any other engine and profile are left as they were (an engine's own `profile` field is its business),
+ * and so is a call with no engine (it can only read what is cached).
  */
 function refuseCrossedVoices(engine, profile) {
-  if (engine.profile && !sameRecipe(engine.profile, profile)) {
-    throw new Error(`the ${engine.name} engine makes clips for its own profile ("${engine.profile.id}") only, not "${profile.id}": pass profile: engine.profile`);
+  const bound = engine?.profile?.engine === 'recorded' ? engine.profile : null;
+  if (bound && !sameRecipe(bound, profile)) {
+    throw new Error(`the ${engine.name} engine makes clips for its own profile ("${bound.id}") only, not "${profile.id}": pass profile: engine.profile`);
   }
-  if (!engine.profile && profile.engine === 'recorded') {
+  if (engine && !bound && profile.engine === 'recorded') {
     throw new Error(`"${profile.id}" is a recorded session's profile: only the recordedTakes engine that made it fills it, not the ${engine.name} engine`);
   }
 }
@@ -59,8 +62,8 @@ const keptWords = (words) => words.map((w) => ({ text: w.text, start: w.start, e
  * ({ text, duration, sentences, words, take } — `words` only when the engine aligned some, `take` only from a
  * recorded take). In batches of `batch`, each cached as soon as it is done, so an
  * interrupted run keeps every batch it finished; a text said on several steps is voiced once. `only` (a Set of
- * 1-based steps, pickSteps) narrows it. An engine with a `preflight` is handed every scene to voice before the
- * first batch, to refuse them all at once (recorded takes: every line not recorded yet). The engine works in
+ * 1-based steps, pickSteps) narrows it. An engine with a `preflight` is handed every scene to voice (and `work`)
+ * before the first batch, to refuse them all at once (recorded takes: every line not recorded yet). The engine works in
  * `work` — a folder of its own, emptied before each batch (by default a new temporary folder, removed afterwards).
  * Returns { wanted, todo, voiced }.
  */
@@ -79,7 +82,7 @@ export async function voiceClips(texts, { cache, profile, engine, only = null, b
   log(`${wanted} clips wanted · ${todo.size} to voice · the rest are cached`);
   let voiced = 0;
   if (!keys.length) return { wanted, todo: 0, voiced };
-  await engine.preflight?.(keys.map((key) => ({ id: `k${key}`, text: todo.get(key) })));
+  await engine?.preflight?.(keys.map((key) => ({ id: `k${key}`, text: todo.get(key) })), { work: work && path.resolve(work) });
   const own = !work, dir = own ? mkdtempSync(path.join(tmpdir(), 'footprint-narration-voice-')) : path.resolve(work);
   try {
     for (let b = 0; b < keys.length; b += batch) {
