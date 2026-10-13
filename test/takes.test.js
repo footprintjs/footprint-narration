@@ -4,7 +4,7 @@
 // that the stand-in cuts as ffmpeg does.
 import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, copyFileSync, symlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -265,6 +265,39 @@ test('a work folder over the takes is refused: it is emptied before each batch',
   assert.equal(calls.length, 0);
   assert.doesNotThrow(() => engine.preflight(scenes, { work: path.join(dir, 'takes-work') }), 'a folder beside the takes');
   assert.doesNotThrow(() => engine.preflight(scenes), 'no work folder: a temporary one');
+});
+
+test('the folder guard asks where a folder really is: a symlinked work, a symlinked take pointing out', async () => {
+  const takes = takesFolder({ 'One two.': ['1.wav', TAKE] }), { calls, run } = tools(), engine = recordedTakes({ kit: dir, takes, run });
+  const scenes = [{ id: 'k1', text: 'One two.' }], link = path.join(dir, 'link');
+  symlinkSync(takes, link);
+  assert.throws(() => engine.preflight(scenes, { work: link }), { message: new RegExp(`the work folder ${link} is the takes folder`) });
+  assert.throws(() => engine.preflight(scenes, { work: path.join(link, 'w', 'deeper') }), /is inside the takes folder/, 'a work folder not made yet, under the link');
+  await assert.rejects(voiceClips(['One two.'], { cache: path.join(dir, 'cache'), profile: engine.profile, engine, work: link }), /is the takes folder/);
+  assert.ok(existsSync(path.join(takes, '1.wav')) && calls.length === 0, 'the recordings are untouched');
+  writeFileSync(path.join(dir, 'outside.wav'), wavOf(TAKE));
+  symlinkSync(path.join(dir, 'outside.wav'), path.join(takes, 'evil.wav'));
+  symlinkSync(path.join(takes, '1.wav'), path.join(takes, 'alias.wav'));
+  writeFileSync(path.join(takes, 'takes.json'), JSON.stringify({ 'One two.': 'evil.wav' }));
+  assert.throws(() => recordedTakes({ kit: dir, takes, run }), { message: `recordedTakes: takes.json names 1 file outside ${takes}: evil.wav — keep every take inside the takes folder` });
+  writeFileSync(path.join(takes, 'takes.json'), JSON.stringify({ 'One two.': 'alias.wav' }));
+  assert.equal(recordedTakes({ kit: dir, takes, run }).name, 'recorded', 'a symlink to a take inside the folder');
+  assert.equal(recordedTakes({ kit: dir, takes: link, run }).name, 'recorded', 'a takes folder reached through a symlink');
+});
+
+/** Does this file system tell TAKES from takes? Asked of a real folder, at run time. */
+function caseSensitive() {
+  const probe = mkdtempSync(path.join(tmpdir(), 'fn-Case-'));
+  try { return !existsSync(path.join(path.dirname(probe), path.basename(probe).toLowerCase())); } finally { rmSync(probe, { recursive: true, force: true }); }
+}
+
+test('the folder guard on a case-blind disk: TAKES is takes', { skip: caseSensitive() && 'this file system tells TAKES from takes' }, async () => {
+  const takes = takesFolder({ 'One two.': ['1.wav', TAKE] }), { calls, run } = tools(), engine = recordedTakes({ kit: dir, takes, run });
+  const scenes = [{ id: 'k1', text: 'One two.' }], upper = path.join(dir, 'TAKES');
+  assert.throws(() => engine.preflight(scenes, { work: upper }), { message: new RegExp(`the work folder ${upper} is the takes folder`) });
+  assert.throws(() => engine.preflight(scenes, { work: path.join(upper, 'Work') }), /is inside the takes folder/);
+  await assert.rejects(voiceClips(['One two.'], { cache: path.join(dir, 'cache'), profile: engine.profile, engine, work: upper }), /is the takes folder/);
+  assert.ok(existsSync(path.join(takes, '1.wav')) && existsSync(path.join(takes, 'takes.json')) && calls.length === 0, 'the recordings are untouched');
 });
 
 test('the session profile: the same takes, the same id; a take recorded again, a new line or another trim setting, a new one — never a cloned voice\'s key', () => {

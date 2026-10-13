@@ -3,7 +3,7 @@
 // take by its words (matchKey: each word as normSpeech compares it, case and punctuation aside), so a deck's curly
 // quote or a dropped comma still finds the take, while "a part" is not "apart", and an edited line — other words —
 // finds none and is listed for recording again.
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { normSpeech } from '../spoken/normSpeech.js';
@@ -20,9 +20,21 @@ export const wordsOf = (text) => text.trim().split(/\s+/);
 /** How a line finds its take: its words, each as normSpeech compares it, those with none dropped, one space between. */
 export const matchKey = (text) => wordsOf(text).map(normSpeech).filter(Boolean).join(' ');
 
-/** Is `inner` the folder `outer` or inside it? (by their paths) */
+/**
+ * Where a path really is: every symlink resolved, in the file system's own case (realpathSync.native — the plain
+ * realpathSync keeps the case it is given, and on a case-insensitive disk TAKES is takes). A path that does not exist
+ * yet is its nearest existing parent's real path with the rest appended.
+ */
+function realOf(p) {
+  let at = path.resolve(p);
+  const rest = [];
+  while (!existsSync(at) && path.dirname(at) !== at) { rest.unshift(path.basename(at)); at = path.dirname(at); }
+  return path.join(realpathSync.native(at), ...rest);
+}
+
+/** Is `inner` the folder `outer` or inside it? Asked of where both really are, never of how they are spelled. */
 const within = (outer, inner) => {
-  const rel = path.relative(outer, inner);
+  const rel = path.relative(realOf(outer), realOf(inner));
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 };
 
@@ -37,7 +49,7 @@ function readManifest(file) {
   return book;
 }
 
-/** What is wrong with a take's file, or null: it must be a file inside the takes folder. */
+/** What is wrong with a take's file, or null: it must be a file inside the takes folder — really, a symlink followed. */
 function fileProblem(dir, at) {
   if (!within(dir, at)) return 'outside';
   if (!existsSync(at)) return 'absent';
@@ -69,12 +81,13 @@ export function readTakeBook(dir, manifest = 'takes.json') {
 }
 
 /**
- * Refuses a `work` folder that is the takes folder, holds it or lies inside it: a voice's work folder is emptied
- * before each batch (cache.js · voiceClips), and the takes are the owner's own recordings.
+ * Refuses a `work` folder that is the takes folder, holds it or lies inside it — where the folders really are, so a
+ * symlink or another spelling of the case is no way past: a voice's work folder is emptied before each batch
+ * (cache.js · voiceClips), and the takes are the owner's own recordings.
  */
 export function refuseWorkOverTakes(work, book) {
   if (!work) return;
-  const at = path.resolve(work), how = at === book.dir ? 'is' : within(at, book.dir) ? 'holds' : within(book.dir, at) ? 'is inside' : null;
+  const at = path.resolve(work), how = realOf(at) === realOf(book.dir) ? 'is' : within(at, book.dir) ? 'holds' : within(book.dir, at) ? 'is inside' : null;
   if (how) throw new Error(`recordedTakes: the work folder ${at} ${how} the takes folder ${book.dir}, and a work folder is emptied before each batch — give work a folder of its own, or leave it out`);
 }
 

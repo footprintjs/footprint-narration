@@ -18,7 +18,8 @@ clipFor(texts[0], { cache: 'voice-cache', profile });               // { key, au
   when the engine aligned some, `take` when it was cut from a recorded take — `clipFor` gives `null` for either
   otherwise), `pickSteps` ("1-3,7"). A recorded engine carries its session's `profile` (it fills that profile's clips
   only); any engine may carry a `preflight(scenes, { work })`, handed every scene to voice and the work folder before
-  the first batch, to refuse them all at once. With no engine, `voiceClips` only counts what is cached.
+  the first batch, to refuse them all at once. With no engine, `voiceClips` counts what is cached, and throws, as it
+  always did, when a text is still to voice.
 - `chatterbox.js` — `chatterboxKit`: writes a storyboard, runs the kit's Python offline (`HF_HUB_OFFLINE=1`),
   reads `timings.json`. The port is `{ name, synthesize(scenes, { work }) }`: bring another adapter with that shape.
 - `spawn.js` — how a tool the voice door runs failed (`failure`, `lastLine`): the one reading of `spawnSync`.
@@ -48,7 +49,7 @@ once, and names the fix.
 
 | step | file | does | refuses |
 |---|---|---|---|
-| find | `takes.js` | `readTakeBook`, `findTakes`: the take of each line | no takes.json; a file it names that is outside the folder, missing or not a file; two takes for the same words; a work folder over the takes; every line with no take, ready to paste |
+| find | `takes.js` | `readTakeBook`, `findTakes`: the take of each line | no takes.json; a file it names that is outside the folder (where it really is: a symlink is followed), missing or not a file; two takes for the same words; a work folder over the takes; every line with no take, ready to paste |
 | trim | `trim.js`, `wav.js` | ffmpeg decodes the take to 16-bit mono PCM; the level is measured per 10 ms; the cut is planned in whole samples (`planTrim`); ffmpeg cuts it (`atrim` + `concat`) and pads it (`adelay` + `apad`), bit-exact | a take with no sound of `minSound` above `threshold` |
 | align | `align.js`, `align_take.py` | the kit's MMS_FA aligner (`tts_chatterbox.py · align`) runs in the kit's Python, offline, and writes `timings.json` in the kit's shape | a word with no letters (say it in words); a missing or failing Python; the aligner's weights not on disk (it never downloads) |
 | check | `align.js` | `check_words.py`'s report: a score per word (low under 0.3) and the letters heard against the text's | a take the aligner could not fit to its words |

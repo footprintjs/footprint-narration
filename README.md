@@ -151,7 +151,8 @@ the takes folder, holds it or lies inside it, because a work folder is emptied b
   every few lines. The default stays 4 because batching is the cache's rule for every engine, and an interrupted run
   keeps each finished batch either way.
 - **Reading clips without the takes.** `takes.profile` is two strings. Save it with the deck, and a machine without
-  the recordings reads every clip with `clipFor(text, { cache, profile })`, or `voiceClips` with no engine.
+  the recordings reads every clip with `clipFor(text, { cache, profile })`. `voiceClips` with no engine counts what
+  is cached, and throws, as it always did, when a line is still to voice.
 - **The limit:** the session cannot be pinned by name. Any change to the takes (a line recorded again, a new line, a
   trim setting) gives a new session, and every line is cut and aligned again. That takes seconds per line and
   generates no voice. A pinned id would let a line recorded again keep its old clip, because the cache never asks an
