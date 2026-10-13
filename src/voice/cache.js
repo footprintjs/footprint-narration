@@ -9,7 +9,8 @@ import { clipKey } from './key.js';
 /**
  * The cached clip for a text, or null: { key, audio (its .wav, else its .m4a), duration, sentences (each one's
  * start, s), words ([{ text, start, end }] as the voice's aligner timed them; null when it kept none — a clip
- * voiced before footprint-narration 0.1.0, or by an engine that aligns no words) }.
+ * voiced before footprint-narration 0.1.0, or by an engine that aligns no words), take (the record of the
+ * recorded take it was cut from — recorded.js; null for a clip a voice made) }.
  */
 export function clipFor(text, { cache, profile }) {
   if (!text) return null;
@@ -17,8 +18,24 @@ export function clipFor(text, { cache, profile }) {
   const key = clipKey(text, profile), meta = path.join(cache, `${key}.json`);
   if (!existsSync(meta)) return null;
   const wav = path.join(cache, `${key}.wav`);
-  const { duration, sentences, words } = JSON.parse(readFileSync(meta, 'utf8'));
-  return { key, audio: existsSync(wav) ? wav : path.join(cache, `${key}.m4a`), duration, sentences, words: words ?? null };
+  const { duration, sentences, words, take } = JSON.parse(readFileSync(meta, 'utf8'));
+  return { key, audio: existsSync(wav) ? wav : path.join(cache, `${key}.m4a`), duration, sentences, words: words ?? null, take: take ?? null };
+}
+
+/** Two profiles make the same clips when their recipes agree: the key of no text tells (key.js · clipKey). */
+const sameRecipe = (a, b) => clipKey('', a) === clipKey('', b);
+
+/**
+ * A recorded session's clips are the owner's own takes, so the two never cross: an engine bound to a profile
+ * (recordedTakes) fills that profile's clips only, and a recorded profile is filled by its own engine only.
+ */
+function refuseCrossedVoices(engine, profile) {
+  if (engine.profile && !sameRecipe(engine.profile, profile)) {
+    throw new Error(`the ${engine.name} engine makes clips for its own profile ("${engine.profile.id}") only, not "${profile.id}": pass profile: engine.profile`);
+  }
+  if (!engine.profile && profile.engine === 'recorded') {
+    throw new Error(`"${profile.id}" is a recorded session's profile: only the recordedTakes engine that made it fills it, not the ${engine.name} engine`);
+  }
 }
 
 /**
@@ -39,13 +56,17 @@ const keptWords = (words) => words.map((w) => ({ text: w.text, start: w.start, e
 
 /**
  * Voices every text whose clip is not cached: `texts` (one per step, '' for none) → cache/<key>.wav + <key>.json
- * ({ text, duration, sentences, words } — `words` only when the engine aligned some). In batches of `batch`, each cached as soon as it is done, so an
+ * ({ text, duration, sentences, words, take } — `words` only when the engine aligned some, `take` only from a
+ * recorded take). In batches of `batch`, each cached as soon as it is done, so an
  * interrupted run keeps every batch it finished; a text said on several steps is voiced once. `only` (a Set of
- * 1-based steps, pickSteps) narrows it. The engine works in `work` — a folder of its own, emptied before each batch
- * (by default a new temporary folder, removed afterwards). Returns { wanted, todo, voiced }.
+ * 1-based steps, pickSteps) narrows it. An engine with a `preflight` is handed every scene to voice before the
+ * first batch, to refuse them all at once (recorded takes: every line not recorded yet). The engine works in
+ * `work` — a folder of its own, emptied before each batch (by default a new temporary folder, removed afterwards).
+ * Returns { wanted, todo, voiced }.
  */
 export async function voiceClips(texts, { cache, profile, engine, only = null, batch = 4, work, log = () => {} }) {
   if (!Number.isInteger(batch) || batch < 1) throw new RangeError(`batch must be a whole number of clips, 1 or more (got ${batch})`);
+  refuseCrossedVoices(engine, profile);
   cache = path.resolve(cache);
   mkdirSync(cache, { recursive: true });
   const todo = new Map();
@@ -58,6 +79,7 @@ export async function voiceClips(texts, { cache, profile, engine, only = null, b
   log(`${wanted} clips wanted · ${todo.size} to voice · the rest are cached`);
   let voiced = 0;
   if (!keys.length) return { wanted, todo: 0, voiced };
+  await engine.preflight?.(keys.map((key) => ({ id: `k${key}`, text: todo.get(key) })));
   const own = !work, dir = own ? mkdtempSync(path.join(tmpdir(), 'footprint-narration-voice-')) : path.resolve(work);
   try {
     for (let b = 0; b < keys.length; b += batch) {
@@ -69,7 +91,8 @@ export async function voiceClips(texts, { cache, profile, engine, only = null, b
         const key = r.id.slice(1), text = todo.get(key);
         copyFileSync(r.audio, path.join(cache, `${key}.wav`));
         rmSync(path.join(cache, `${key}.m4a`), { force: true });   // a page's copy of the old take would carry the new timings
-        writeFileSync(path.join(cache, `${key}.json`), JSON.stringify({ text, duration: r.duration, sentences: sentenceStarts(text, r.words ?? []), ...(Array.isArray(r.words) && { words: keptWords(r.words) }) }));
+        writeFileSync(path.join(cache, `${key}.json`), JSON.stringify({ text, duration: r.duration, sentences: sentenceStarts(text, r.words ?? []),
+          ...(Array.isArray(r.words) && { words: keptWords(r.words) }), ...(r.take && { take: r.take }) }));
       }
       voiced += results.length;
       log(`clips cached: ${voiced}/${keys.length}`);

@@ -19,7 +19,7 @@ Two doors, nothing else:
 | door | what | runs |
 |---|---|---|
 | `footprint-narration` | the shown↔spoken map, sentences, captions, chapters | anywhere — browser or Node; no dependencies |
-| `footprint-narration/voice` | the voice port, the clip cache, the Chatterbox kit adapter | **Node only** (files, child processes) |
+| `footprint-narration/voice` | the voice port, the clip cache, its two adapters: the Chatterbox kit and your own recorded takes | **Node only** (files, child processes) |
 
 ## One text, as shown and as spoken
 
@@ -107,6 +107,45 @@ line re-voices that line alone, and an interrupted run keeps every batch it fini
 `{ name, synthesize(scenes, { work }) }`; `chatterboxKit` is one adapter, a test fake or a cloud voice is another.
 Clone only your own voice.
 
+## Your own voice, recorded (Node)
+
+**Why:** a cloned voice is a stand-in. When you would rather read the script yourself, each recording should land
+in the film or deck exactly as a cloned line does: the same lead and tail of silence, its words timed against the
+known text by the same aligner, cached by the same key recipe. `recordedTakes` is the second adapter of the voice
+port, so nothing downstream changes.
+
+```js
+import { recordedTakes, voiceClips, clipFor } from 'footprint-narration/voice';
+
+const takes = recordedTakes({ kit: '../voice-kit', takes: 'takes' });          // your recordings + the kit's aligner
+await voiceClips(texts, { cache: 'voice-cache', profile: takes.profile, engine: takes });
+clipFor(texts[3], { cache: 'voice-cache', profile: takes.profile }).take;
+// { file: '004.m4a', trim: { length: 6.1, kept: 4.35, cutBefore: 0.82, cutAfter: 0.31, pauses: [{ at: 2.4, was: 1.62, now: 0.6 }] },
+//   check: { words: 14, meanScore: 0.86, lowWords: [['latency', 0.21]], letterMatch: 0.97 } }
+```
+
+The folder holds one recording per line (WAV or M4A, any name) and a `takes.json` that maps each line, as it is
+said, to its file: `{ "One frame takes sixteen point six seven milliseconds.": "004.m4a" }`. A line finds its take
+by its words, so case and punctuation do not matter. A line with no take is refused, with every such line listed
+and ready to paste into `takes.json`. The file names stay your recorder's, and an edited line is listed again
+instead of being cut from a take of the old words. Each take then goes through four steps:
+
+- **find**: its take in `takes.json`.
+- **trim**: with ffmpeg, keep the kit's 0.2 s before the first sound and 0.4 s after the last, and shorten every
+  pause longer than 0.6 s to 0.6 s. The cut is computed in whole samples, so the same take always gives the same
+  bytes.
+- **align**: the kit's own MMS_FA aligner runs offline in the kit's Python, through `align_take.py`, which ships
+  here.
+- **check**: as the kit's `check_words.py` does it. A take the aligner cannot fit to its words is refused; a
+  low-scored word is reported, for you to listen to.
+
+What each step decided is the clip's `take` record, kept beside it in the cache.
+
+The session's `profile` is a hash of the takes' bytes and the trim settings, so a recorded line and a cloned line of
+the same text never share a key, and a line recorded again is never served stale. `voiceClips` refuses a recorded
+engine with any other profile, and a recorded profile with any other engine. The voice is yours alone: never use
+this for anyone else's.
+
 ## API
 
 | export | does |
@@ -121,7 +160,7 @@ Clone only your own voice.
 | `captionCues(steps)`, `captionChunks(tracks, opts)`, `captionAt` | cues by sentence; chunks by word; the word being said |
 | `captionFile(cues, kind, opts)`, `readCaptions`, `stamp`, `FILE_CHUNKS` | the one writer, its reader, its clock |
 | `youtubeChapters(marks, { length, min })`, `readChapters`, `clockText` | chapters fixed and reported; read back; their clock |
-| `/voice` `clipKey`, `clipFor`, `voiceClips`, `pickSteps`, `chatterboxKit` | the clip cache and the voice port's adapter |
+| `/voice` `clipKey`, `clipFor`, `voiceClips`, `pickSteps`, `chatterboxKit`, `recordedTakes` | the clip cache and the voice port's two adapters |
 
 Types ship with both doors (`index.d.ts`, `voice.d.ts`). Each `src/` folder has a README saying why it exists.
 

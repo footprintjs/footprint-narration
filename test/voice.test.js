@@ -49,7 +49,7 @@ test('the key changes with the words and with the voice settings, not with field
 test('the cache finds a clip (its .wav, else its .m4a) and nothing for a text not voiced or empty; a clip from before keeps no words', () => {
   const key = clipKey('Hi.', PROFILE);
   writeFileSync(path.join(dir, `${key}.json`), JSON.stringify({ text: 'Hi.', duration: 1.5, sentences: [0.1] }));
-  assert.deepEqual(clipFor('Hi.', { cache: dir, profile: PROFILE }), { key, audio: path.join(dir, `${key}.m4a`), duration: 1.5, sentences: [0.1], words: null });
+  assert.deepEqual(clipFor('Hi.', { cache: dir, profile: PROFILE }), { key, audio: path.join(dir, `${key}.m4a`), duration: 1.5, sentences: [0.1], words: null, take: null });
   writeFileSync(path.join(dir, `${key}.wav`), 'wav');
   assert.equal(clipFor('Hi.', { cache: dir, profile: PROFILE }).audio, path.join(dir, `${key}.wav`));
   assert.equal(clipFor('Other.', { cache: dir, profile: PROFILE }), null);

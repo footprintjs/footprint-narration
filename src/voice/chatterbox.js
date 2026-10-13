@@ -3,9 +3,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-
-/** Why a spawned process failed, or null when it ran and exited 0 (a missing binary or a signal is a failure). */
-const failure = (done) => (done?.error ? done.error.message : done?.signal ? `signal ${done.signal}` : done?.status !== 0 ? `exit ${done?.status}` : null);
+import { failure } from './spawn.js';
 
 /**
  * The adapter for a local voice kit (a StoryReel-style folder): its Python environment runs Chatterbox on a

@@ -2,8 +2,8 @@
 import { spokenMap, autoRules, shownWords, spokenOffset, unsaidDigits, checkSlots, captionChunks, captionCues, captionFile, readCaptions, captionAt,
   FILE_CHUNKS, youtubeChapters, readChapters, clockText, sentences, saidSentences, sentenceStarts, numberWords, normSpeech, SPELL, SAY, findSlot, stamp } from 'footprint-narration';
 import type { SpokenMap, Piece, Rules, Slot, WordTiming, Track, WordCue, Chapters, ChapterChange } from 'footprint-narration';
-import { clipKey, clipFor, voiceClips, pickSteps, chatterboxKit } from 'footprint-narration/voice';
-import type { VoiceEngine, Clip, VoiceProfile } from 'footprint-narration/voice';
+import { clipKey, clipFor, voiceClips, pickSteps, chatterboxKit, recordedTakes } from 'footprint-narration/voice';
+import type { VoiceEngine, Clip, VoiceProfile, TakeRecord, TrimSettings, Scene } from 'footprint-narration/voice';
 
 const slots: Slot[] = [['16.67 ms', 'sixteen point six seven milliseconds']];
 const map: SpokenMap = spokenMap('One frame takes 16.67 ms.', { slots: checkSlots('One frame takes 16.67 ms.', slots), rules: autoRules({ spell: { ...SPELL, UI: 'U I' }, say: SAY }) });
@@ -30,4 +30,14 @@ const timed: WordTiming[] | null | undefined = clip?.words;
 const key: string = clipKey('Hi.', profile);
 voiceClips(['Hi.'], { cache: 'cache', profile, engine, only: pickSteps('1-3'), batch: 2 }).then((r) => r.voiced + r.todo + r.wanted);
 
-export { kinds, shown, at, digits, now, back, misc, timed, key };
+const trim: TrimSettings = { threshold: -50, maxPause: 0.8 };
+const takes = recordedTakes({ kit: '../kit', takes: 'takes', trim, run: () => ({ status: 0, stderr: '' }), log: (line) => line.length });
+const scenes: Scene[] = [{ id: 'k1', text: 'Hi.' }];
+takes.preflight(scenes);
+const recorded: VoiceProfile = takes.profile;
+voiceClips(['Hi.'], { cache: 'cache', profile: recorded, engine: takes });
+const record: TakeRecord | null | undefined = clipFor('Hi.', { cache: 'cache', profile: recorded })?.take;
+const low: string | undefined = record?.check.lowWords[0]?.[0];
+const capped: number | undefined = record?.trim.pauses[0]?.now;
+
+export { kinds, shown, at, digits, now, back, misc, timed, key, low, capped };
