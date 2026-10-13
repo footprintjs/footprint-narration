@@ -1,6 +1,6 @@
 {
   "name": "footprint-narration",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "What a voice says and what a caption shows: shown-vs-spoken text, sentences and word times, caption cues and files, YouTube chapters; a voice port and a clip cache behind /voice.",
   "type": "module",
   "license": "MIT",

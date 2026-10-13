@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.0
+
+Your own voice, recorded. A second adapter of the voice port voices a deck or a film from takes you read
+yourself, lined up to their text the same way a cloned clip is.
+
+- **voice** (`footprint-narration/voice`): `recordedTakes({ kit, takes, … })`.
+  - **Find.** Each line's take is found through `takes.json` (text → file), matched word by word: "a part" is not
+    "apart", while a curly quote or a dropped comma still finds its take. Every file must really be inside the
+    takes folder (symlinks and the disk's own case are resolved), and every line without a take is refused at once,
+    as lines ready to paste into `takes.json`.
+  - **Trim.** ffmpeg cuts each take to exactly the kit's 0.2 s lead and 0.4 s tail, padding with silence where a
+    take starts or ends at once, and caps inner pauses at 0.6 s. A short word at either end is kept.
+  - **Align.** The kit's MMS_FA aligner runs offline through the shipped `align_take.py`, which refuses rather than
+    downloads its weights.
+  - **Check.** Words are scored as the kit's `check_words.py` scores them; low words are reported.
+  - Each clip keeps a `take` record of what was cut, added and heard. The recording session is its own profile
+    (`take-<hash>`), so a recorded and a cloned line of the same text never share a clip; `clipKey` is unchanged.
+- `clipFor` returns a new `take` field (`null` for a clip a voice made).
+- `voiceClips` hands every scene and the `work` folder to an engine's optional `preflight` before the first batch.
+  It refuses a recorded engine with any other profile and a recorded profile with any other engine, and a `work`
+  folder that is, holds or lies inside the takes folder (it is emptied before each batch). Calls with no engine and
+  other engines' own `profile` fields behave as before.
+- `chatterboxKit` takes an absolute `python` path as given.
+
 ## 0.1.0
 
 The first release: the narration code that StoryDeck 0.2.0 and footprint-storyreel 0.9.0 each kept, moved into
