@@ -49,7 +49,7 @@ test('the key changes with the words and with the voice settings, not with field
 test('the cache finds a clip (its .wav, else its .m4a) and nothing for a text not voiced or empty; a clip from before keeps no words', () => {
   const key = clipKey('Hi.', PROFILE);
   writeFileSync(path.join(dir, `${key}.json`), JSON.stringify({ text: 'Hi.', duration: 1.5, sentences: [0.1] }));
-  assert.deepEqual(clipFor('Hi.', { cache: dir, profile: PROFILE }), { key, audio: path.join(dir, `${key}.m4a`), duration: 1.5, sentences: [0.1], words: null });
+  assert.deepEqual(clipFor('Hi.', { cache: dir, profile: PROFILE }), { key, audio: path.join(dir, `${key}.m4a`), duration: 1.5, sentences: [0.1], words: null, take: null });
   writeFileSync(path.join(dir, `${key}.wav`), 'wav');
   assert.equal(clipFor('Hi.', { cache: dir, profile: PROFILE }).audio, path.join(dir, `${key}.wav`));
   assert.equal(clipFor('Other.', { cache: dir, profile: PROFILE }), null);
@@ -168,6 +168,8 @@ test('the kit adapter hands the kit absolute paths only: it runs in its own fold
     assert.equal(seen.cmd, path.join(process.cwd(), 'kits', 'voice', '.venv-voice', 'bin', 'python'));
     assert.equal(seen.args[seen.args.indexOf('--storyboard') + 1], path.join(process.cwd(), 'rel', 'work', 'storyboard.json'));
     assert.equal(seen.args.at(-1), path.join(process.cwd(), 'rel', 'work'));
+    chatterboxKit({ kit: 'kits/voice', python: '/opt/voice/bin/python', run }).synthesize([{ id: 'k1', text: 'x' }], { work: 'rel/work' });
+    assert.equal(seen.cmd, '/opt/voice/bin/python', 'a Python given whole is not put under the kit');
   } finally {
     process.chdir(was);
   }

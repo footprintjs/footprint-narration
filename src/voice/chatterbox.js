@@ -3,9 +3,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-
-/** Why a spawned process failed, or null when it ran and exited 0 (a missing binary or a signal is a failure). */
-const failure = (done) => (done?.error ? done.error.message : done?.signal ? `signal ${done.signal}` : done?.status !== 0 ? `exit ${done?.status}` : null);
+import { failure } from './spawn.js';
 
 /**
  * The adapter for a local voice kit (a StoryReel-style folder): its Python environment runs Chatterbox on a
@@ -20,7 +18,7 @@ export function chatterboxKit({ kit, python = '.venv-voice/bin/python', script =
     synthesize(scenes, { work }) {
       const dir = path.resolve(work), board = path.join(dir, 'storyboard.json');
       writeFileSync(board, JSON.stringify({ scenes: scenes.map((s) => ({ id: s.id, narration: s.text })) }, null, 1));
-      const done = run(path.join(kit, python), [script, '--storyboard', board, '--profile', profile, '--device', device, '--out', dir],
+      const done = run(path.resolve(kit, python), [script, '--storyboard', board, '--profile', profile, '--device', device, '--out', dir],
         { cwd: kit, stdio: 'inherit', env: { ...env, HF_HUB_OFFLINE: env.HF_HUB_OFFLINE ?? '1' } });
       const why = failure(done);
       if (why) throw new Error(`the voice kit failed (${why}) in ${kit}`);

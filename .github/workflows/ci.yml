@@ -20,6 +20,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm ci
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg   # the recorded-take tests cut with the real ffmpeg (they fail without it on CI)
       - run: npm test                                    # with the coverage thresholds
       - run: npx --yes -p typescript@5.9.3 tsc -p tsconfig.check.json   # the hand-kept types describe both doors
       - run: npx --yes publint@0.3.25 --strict
